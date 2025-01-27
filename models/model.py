@@ -4,6 +4,7 @@ from torch_geometric.nn import MessagePassing, global_mean_pool
 from torch_geometric.nn import TransformerConv
 from torch_sparse import matmul
 from torch_geometric.typing import Adj, Size
+
 class LCMessages(MessagePassing):
     def __init__(self, d):
         # aggr set to None (maybe have to change it)
@@ -163,4 +164,3 @@ class NeuroSAT(nn.Module):
 
         #return logits_average_vote
 
-    
