@@ -13,11 +13,15 @@ train:
   lr: 1e-3
   weight_decay: 1e-10
   gradient_clip_val: 0.65
-  scheduler: "cosine"
+  scheduler: "linear"
   accelerator: "gpu"
   devices: 1
+  save_checkpoints: true
 
 data:
-  data_path: "${system.base_dir}/temp/geo/geometry_problems_most_new.pickle"
+  data_path: "${system.base_dir}/temp/geo/geometry_problems_most_new.pickle" #geometry_problems_most_new.pickle
   batch_size: 64
   num_workers: 4
+  max_size: 20
+  max_constraints: 20
+  valid_split: 0.9

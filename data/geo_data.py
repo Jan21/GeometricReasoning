@@ -60,168 +60,73 @@ class Problem(Data):
 
 # Remark: using a InMemoryDataset is faster than a standard Dataset
 
-class InMemoryGeoDataset(InMemoryDataset):
-    def __init__(self, root, d):
-        # root: location of dataset
-        # d: number of features for x_l and x_c
-
-        self.root = root
-        self.d = d
-
-        # create initial feature vectors
-        self.l_init = torch.normal(mean=0.0, std=1.0, size=(1,self.d)) # original
-        self.c_init = torch.normal(mean=0.0, std=1.0, size=(1,self.d)) # original
-        #self.l_init = torch.zeros(size=(1,self.d), dtype=torch.float32)
-        #self.c_init = torch.zeros(size=(1,self.d), dtype=torch.float32)
-        self.denom = torch.sqrt(torch.tensor(self.d, dtype=torch.float32)) # or float64???
-
-        super(InMemoryGeoDataset, self).__init__(root=self.root)
-        self.data, self.slices = torch.load(self.processed_paths[0])
-
-    @property
-    def raw_dir(self):
-        return self.root
-
-    @property
-    def raw_file_names(self):
-        # get dimacs filenames
-        sorted_file_names = sorted([f for f in listdir(self.root)
-                                   if osp.isfile(osp.join(self.root,f))])
-        return sorted_file_names
-
-    @property
-    def processed_file_names(self):
-        return ['data.pt']
-
-
-    def process(self):
-        # Read data into huge `Data` list.
-        data_list = []
-
-        for raw_path in self.raw_paths:
-            n_vars, clauses = self.parse_dimacs(raw_path)
-            # n_vars is the number of variables according to the dimacs file
-            # clauses is a list of lists (=clauses) of numbers (=literals)
-
-            y, _ = solve_sat(n_vars, clauses) # get problem label (sat/unsat)
-
-            # create graph instance (Problem)
-            p = self.create_problem(n_vars, clauses, y)
-
-            data_list.append(p)
-        #for i in range(10):
-        #    with open(self.root+f"/processed{str(i)}.pkl",'wb') as f:
-        #        pickle.dump(data_list[20000*i:20000*i+20000], f)
-        #with open(self.root+"/processed2.pkl",'wb') as f:
-        #    pickle.dump(data_list[100000:], f)
-        data, slices = self.collate(data_list)
-        torch.save((data, slices), self.processed_paths[0])
-
-    # parse dimacs file
-    def parse_dimacs(self, filename):
-        with open(filename, 'r') as f:
-            lines = f.readlines()
-
-        i = 0
-        while lines[i].strip().split(" ")[0] == "c":
-            # strip : remove spaces at the beginning and at the end of the string
-            i += 1
-
-        header = lines[i].strip().split(" ")
-        assert(header[0] == 'p')
-        n_vars = int(header[2])
-        clauses = [[int(s) for s in line.strip().split(" ")[:-1]] for line in lines[i+1:]]
-        return n_vars, clauses
-
-    # create Problem instance (graph) from parsed dimacs
-    def create_problem(self, n_vars, clauses, y):
-        # d is the number of features of x_l and x_c
-
-        n_lits = int(2 * n_vars)
-        n_clauses = len(clauses)
-
-        # create feature vectors for lits and clauses
-        x_l = (torch.div(self.l_init, self.denom)).repeat(n_lits, 1)
-        x_c = (torch.div(self.c_init, self.denom)).repeat(n_clauses, 1)
-
-        # get graph edges from list of clauses
-        edge_index = [[],[]]
-        for i,clause in enumerate(clauses):
-            # get idxs of lits in clause
-            lits_indices = [self.from_lit_to_idx(l, n_vars) for l in clause]
-            clauses_indices = len(clause) * [i]
-
-            # add all edges connected to clause i to edge_index
-            edge_index[0].extend(lits_indices)
-            edge_index[1].extend(clauses_indices)
-
-        # convert edge_index to tensor
-        edge_index = torch.tensor(edge_index, dtype=torch.long)
-
-        return Problem(edge_index, x_l, x_c, y)
-
-    def from_lit_to_idx(self, lit, n_vars):
-        # from a literal in range {1,...n_vars,-1,...,-n_vars} get the literal
-        # index in {0,...,n_lits-1} = {0,...,2*n_vars-1}
-        # if l is positive l <- l-1
-        # if l in negative l <- n_vars-l-1
-        assert(lit!=0)
-        if lit > 0 :
-            return lit - 1
-        if lit < 0 :
-            return n_vars - lit - 1
-
-    def from_index_to_lit(self, idx, n_vars):
-        # inverse of 'from_lit_to_idx', just in case
-        if idx < n_vars:
-            return idx+1
-        else:
-            return n_vars-idx-1
-
-
-
 def map_point_to_integer(point, max_size):
     x, y = point
     return x + y * max_size
 
-def preprocess_problem(problem,max_size):
-  points = problem['points']
-  points_order = list(points.keys())
-  known_points = problem["new_points"]
-  points_mark = [1 if pnt in known_points else 0 for pnt in points_order]
+def preprocess_problem(problem, max_size):
+    points = problem['points']
+    points_order = list(points.keys())
+    known_points = problem["new_points"]
+    points_mark = [1 if pnt in known_points else 0 for pnt in points_order]
+    constrs = problem['constrs']
+    constr_clean = [const for const in constrs if const[0] != "segment"]  
+    
+    constraint_type_to_index = {
+        "PARALLEL": 0,
+        "SQUARE": 1,
+        "MIDPOINT": 3,
+        "DIAMOND": 2
+    }
+    
+    constr_nodes = []
+    constrs_mark = []
+    
+    for const in constr_clean:
+        constr_type = const[0].upper()
+        if constr_type == "MIDPOINT":
+            # For midpoint constraint, pad with the first point to make it 4 points
+            points_in_constraint = const[1:4]  # Get the 3 points
+            padded_points = list(points_in_constraint) + [points_in_constraint[0]]  # Add first point as padding
+            constr_nodes.append(tuple(padded_points))  # Convert to tuple for dictionary key
+        else:
+            # Other constraints already have 4 points
+            constr_nodes.append(tuple(const[1:]))
+            
+        constrs_mark.append(constraint_type_to_index[constr_type])
+    
+    point_nodes = list(points.keys())
+    grapf_index_dict_points = {points_order[i]: i for i in range(len(points_order))}
+    grapf_index_dict_constrs = {constr_nodes[i]: i for i in range(len(constr_nodes))}
+    
+    point_to_constr_edges = [
+        [grapf_index_dict_points[points_order[i]], grapf_index_dict_constrs[constr_nodes[j]]]
+        for i in range(len(points_order))
+        for j in range(len(constr_nodes))
+        if points_order[i] in constr_nodes[j]
+    ]
+    
+    constr_to_point_edges = [[a[1], a[0]] for a in point_to_constr_edges]
+    
+    y = []
+    for p in points_order:
+        y.append(map_point_to_integer(points[p], max_size))
+    
+    constraint_points_ordered = []
+    for c in constr_nodes:
+        for p in c:
+            constraint_points_ordered.append(grapf_index_dict_points[p])
+            
+    return constr_to_point_edges, y, points_mark, constrs_mark, constraint_points_ordered
 
-  constrs = problem['constrs']
-  constr_clean = [const for const in constrs if const[0] != "segment"] #order
-  constr_nodes = [const[1:] for const in constr_clean] #order
-  constrs_mark = [0 if cnst == "equisegment" else 1 for cnst in [c[0] for c in constr_clean]]
 
-  point_nodes = list(points.keys())
-
-  grapf_index_dict_points = {points_order[i] : i for i in range(len(points_order))}
-  grapf_index_dict_constrs = {constr_nodes[i] : i for i in range(len(constr_nodes))}
-
-  point_to_constr_edges = [[grapf_index_dict_points[points_order[i]], grapf_index_dict_constrs[constr_nodes[j]]] for i in range(len(points_order)) for j in range(len(constr_nodes)) if points_order[i] in constr_nodes[j]]
-  constr_to_point_edges = [[a[1], a[0]] for a in point_to_constr_edges]
-
-  y = []
-  for p in points_order:
-    y.append(map_point_to_integer(points[p],max_size))
-
-  
-  constraint_points_ordered = []
-  for c in constr_nodes:
-    for p in c:
-        constraint_points_ordered.append(grapf_index_dict_points[p])
-
-  return constr_to_point_edges, y, points_mark, constrs_mark, constraint_points_ordered
-
-def make_pyg_datapoint(problem,max_size):
+def make_pyg_datapoint(problem,max_size,d):
   
   constr_to_point_edges, y, points_mark, constrs_mark, constraint_points_ordered = preprocess_problem(problem,max_size)
   
   lab = torch.tensor(y, dtype=torch.long)
-  x_p = torch.randn((len(points_mark), 128))
-  x_c = torch.randn((len(constrs_mark), 128))
+  x_p = torch.randn((len(points_mark), d))
+  x_c = torch.randn((len(constrs_mark), d))
 
   p_type = torch.tensor(points_mark, dtype=torch.long)
   c_type = torch.tensor(constrs_mark, dtype=torch.long)
@@ -236,24 +141,24 @@ def make_pyg_datapoint(problem,max_size):
 def get_Geo_data(data, d, max_size):
     dataset = []
     for i in range(len(data)):
-        problem = make_pyg_datapoint(data[i],max_size)
+        problem = make_pyg_datapoint(data[i],max_size,d)
         dataset.append(problem)
     return dataset
 
 
-def get_Geo_dataset(dataset_file):
+def get_Geo_dataset(dataset_file, max_size, max_constraints, valid_split):
     with open(dataset_file, 'rb') as f:
         problems = pickle.load(f)
     data = []
-    max_size = 30 # TADY bylo 10
     for pr in problems:
         num_constr = len([c for c in pr['constrs'] if c[0]!='segment'])
         maxx = max([x for x,y in pr['points'].values()])
         maxy = max([y for x,y in pr['points'].values()])
-        if max(maxx,maxy) < max_size and num_constr < 20:  # TADY bylo 4  20
+        if max(maxx,maxy) < max_size and num_constr < max_constraints:
             data.append(pr)
     data = data
-    trainlen = int(len(data)*0.9)
+    trainlen = int(len(data)*valid_split)
+    
     train_data = data[:trainlen]
     val_data = data[trainlen:]
     d = 128
